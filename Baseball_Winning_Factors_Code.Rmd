@@ -1,0 +1,393 @@
+---
+title: "Baseball Project"
+output: html_document
+---
+
+```{r}
+library(Lahman)
+library(dplyr)
+library(ggplot2)
+library(gplots)
+library(dplyr)
+library(leaps)
+library(pander)
+library(missForest)
+library(VIM)
+library(mice)
+library(glmnet)
+```
+
+# The Data
+
+## Load in the data
+```{r}
+teamData <- readRDS("/Users/KBari/OneDrive/Desktop/Math 456/project/teamData.rds")
+teamSalaryAwards <- readRDS("/Users/KBari/OneDrive/Desktop/Math 456/project/teamSalaryAwards.rds")
+```
+
+
+## Modifying Data
+
+Here we are using some of Lahman's built in datasets and modifying them to encompass the years we want and the team names we want.  
+
+```{r}
+b_modify <- Batting %>% filter(yearID > 1960)
+t_modify <- tibble(yearID=Teams$yearID,
+                   teamID=Teams$teamID, W=Teams$W,
+                   L=Teams$L, name=Teams$name)
+
+p_modify <- Pitching %>% filter(yearID > 1960)
+
+s_modify <- Salaries %>% filter(yearID > 1984)
+
+#modified pitcher wins column so there is no overlap with team wins
+colnames(p_modify)[colnames(p_modify)=="W"] <- "W.p"
+colnames(p_modify)[colnames(p_modify)=="L"] <- "L.p"
+
+#Joins players with the team data sets
+b_modify <- b_modify %>% 
+  left_join(t_modify,by=c("yearID","teamID"))
+p_modify <- p_modify %>% 
+  left_join(t_modify,by=c("yearID","teamID"))
+
+#Modifies names to only current teams since some teams have changed names over the years
+b_modify$name = ifelse(b_modify$name =="California Angels", "Los Angeles Angels of Anaheim", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Los Angeles Angels", "Los Angeles Angels of Anaheim", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="California Angels", "Los Angeles Angels of Anaheim", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Montreal Expos", "Washington Nationals", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Washington Senators", "Washington Nationals", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Seattle Pilots", "Seattle Mariners", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Tampa Bay Devil Rays", "Tampa Bay Rays", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Anaheim Angels", "Los Angeles Angels of Anaheim", b_modify$name)
+b_modify$name = ifelse(b_modify$name =="Florida Marlins", "Miami Marlins", b_modify$name)
+
+p_modify$name = ifelse(p_modify$name =="California Angels", "Los Angeles Angels of Anaheim", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Los Angeles Angels", "Los Angeles Angels of Anaheim", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="California Angels", "Los Angeles Angels of Anaheim", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Montreal Expos", "Washington Nationals", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Washington Senators", "Washington Nationals", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Seattle Pilots", "Seattle Mariners", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Tampa Bay Devil Rays", "Tampa Bay Rays", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Anaheim Angels", "Los Angeles Angels of Anaheim", p_modify$name)
+p_modify$name = ifelse(p_modify$name =="Florida Marlins", "Miami Marlins", p_modify$name)
+
+
+batters_salary <- b_modify %>% 
+  left_join(s_modify,by=c("yearID","playerID")) %>%
+  filter(yearID > 1984)
+
+pitchers_salary <- p_modify %>% 
+  left_join(s_modify,by=c("yearID","playerID")) %>%
+  filter(yearID > 1984)
+View(pitchers_salary)
+```
+
+Due to some pitchers being in the batters dataset and vice versa, we are only counting observations that meet a certain requirement.
+```{r}
+p_final <- pitchers_salary %>% filter(IPouts > 20)
+b_final <- batters_salary %>% filter(AB > 20)
+b_final <- b_final[!(b_final$playerID %in% p_final$playerID),]
+```
+
+With the amount of variables being so large, we decided to look at certain commonly used stats to determine success in baseball.   
+```{r}
+b_salary_data <- b_final %>% filter(yearID<2016) %>% select(playerID,yearID,G,AB,R,H,X2B,X3B,HR,RBI,SB,BB,SO,name,salary)
+p_salary_data <- p_final %>% filter(yearID<2016) %>% select(playerID,yearID,W.p,L.p,GS,G,CG,SO,IPouts,H,ERA,HR,BB,SO,name,salary)
+View(b_salary_data)
+```
+
+
+## Imputation
+Salary was originally over 35% missing from our data. While looking at our data set we noticed there were no salary for the years 2017 or 2018 and salary for the year 2016 was around 50% missing. This is due to the fact that this package has not been updated recently so we trimmed the data to look at the years 1983 - 2015 where 20% of the salary data was missing.
+
+```{r}
+aggr(b_salary_data, col=c('darkolivegreen3','salmon'),
+     numbers=TRUE, sortVars=TRUE,
+     labels=names(team.Data), cex.axis=.7,
+     gap=3, ylab=c("Missing data","Pattern"))
+
+aggr(p_salary_data, col=c('darkolivegreen3','salmon'),
+     numbers=TRUE, sortVars=TRUE,
+     labels=names(p_salary_data), cex.axis=.7,
+     gap=3, ylab=c("Missing data","Pattern"))
+
+imp_salary <- mice(b_salary_data, m=5, maxit=25, meth = "pmm", seed=12345, printFlag=FALSE)
+b_final <- complete(imp_salary, action=1)
+#showing convergence graph
+plot(imp_salary)
+
+imp_salary_p <- mice(p_salary_data, m=5, maxit=25, meth = "pmm",seed=12345, printFlag=FALSE)
+p_final <- complete(imp_salary_p, action=1)
+plot(imp_salary_p)
+
+head(b_final)
+head(p_final)
+
+```
+
+Salary is the only stat that is not complete based on our data. We used Mice to impute the salaries using pmm as the imputation method. Based on the plots, the lines are crossing with no specific patterns so it seems that our imputed values converge.
+
+## Creating new variables
+
+The current dataset we have been building contains a lot of useful variables but there seemed to be something missing in terms of actual player stats. This is why we decided to add in a few new variables to the mix.
+
+```{r}
+hitTotal <- b_final %>% group_by(yearID,name) %>% summarise_at(vars(H,X2B,X3B,HR,AB,RBI,SB,BB,SO),sum)
+pitchTotal <- p_final %>% group_by(yearID,name) %>% summarise_at(vars(CG,SO,H,HR,BB),sum)
+eraAvg <- p_final %>% group_by(yearID,name) %>% summarise_at(vars(ERA),mean)
+
+sal_b <- b_final %>% group_by(yearID,name) %>% summarise_at(vars(salary),sum)
+sal_p <- p_final %>% group_by(yearID,name) %>% summarise_at(vars(salary),sum)
+
+#removing old salary data
+drops <- c("salary_pitchers","salary_batters","salary_total")
+teamSalaryAwards <- teamSalaryAwards[ , !(names(teamSalaryAwards) %in% drops)]
+teamSalaryAwards <- teamSalaryAwards %>% filter(yearID < 2016)
+
+
+teamSalaryAwards <- teamSalaryAwards %>% 
+  left_join(sal_b,by=c("yearID","name"))
+colnames(teamSalaryAwards)[colnames(teamSalaryAwards)=="salary"] <- "salary_batters"
+
+teamSalaryAwards <- teamSalaryAwards %>% 
+  left_join(sal_p,by=c("yearID","name"))
+colnames(teamSalaryAwards)[colnames(teamSalaryAwards)=="salary"] <- "salary_pitchers"
+
+teamSalaryAwards$salary_total <- teamSalaryAwards$salary_batters + teamSalaryAwards$salary_pitchers
+
+teamSalaryAwards <- teamSalaryAwards %>% 
+  left_join(hitTotal,by=c("yearID","name"))
+
+teamSalaryAwards <- teamSalaryAwards %>% 
+  left_join(pitchTotal,by=c("yearID","name"))
+
+teamSalaryAwards <- teamSalaryAwards %>% 
+  left_join(eraAvg,by=c("yearID","name"))
+
+
+names(teamSalaryAwards)[names(teamSalaryAwards)== "SO.y"] <- "PSO"
+names(teamSalaryAwards)[names(teamSalaryAwards)== "H.y"] <- "HA"
+names(teamSalaryAwards)[names(teamSalaryAwards)== "BB.y"] <- "BBA"
+names(teamSalaryAwards)[names(teamSalaryAwards)== "HR.y"] <- "HRA"
+
+names(teamSalaryAwards)[names(teamSalaryAwards)== "SO.x"] <- "SO"
+names(teamSalaryAwards)[names(teamSalaryAwards)== "H.x"] <- "H"
+names(teamSalaryAwards)[names(teamSalaryAwards)== "BB.x"] <- "BB"
+names(teamSalaryAwards)[names(teamSalaryAwards)== "HR.x"] <- "HR"
+
+
+team.Data <- teamSalaryAwards
+View(teamData)
+```
+
+# Principal Component Analysis stats
+
+```{r}
+pc_dep <- princomp(team.Data[37:54], cor = TRUE)
+
+var_pc <- (pc_dep$sdev)^2
+
+qplot(x=1:18, y=cumsum(var_pc)/sum(var_pc)*100, geom="point") + 
+  xlab("PC number") + ylab("Cumulative %") + ylim(c(0,100)) +
+  geom_hline(aes(yintercept=80))
+
+qplot(x=1:18, y=var_pc, geom=c("point", "line")) + 
+  xlab("PC number") + ylab("Eigenvalue") + ylim(c(0,8))
+```
+
+Based on the cumulative percentage plot, the first 7 principal components keep 80% of the original variance. In addition the scree plot shows that the first 4 components have eigenvalues greater than one and the curve starts to flatten out around the 7th component. From these graphs, we decided to keep the first 7 components for  our analysis.
+
+```{r}
+color.palette  <- colorRampPalette(c("blue", "white", "red"))(n=599)
+heatmap.2(pc_dep$loadings[,1:4], scale="none", Rowv=NA, Colv=NA, density.info="none",
+          dendrogram="none", trace="none", col=color.palette)
+
+```
+
+Salary Has Positive loadings on all PC's which tells us that salary may not be as big of an influence on winning games as we thought.
+
+Pc1 seems to be a general catch-all and has positive loadings on every stat. Meaning their pitching and their hitting stats are both high.
+
+PC2 has a positive loading on salaries, doubles, hr, strikeouts, pitcher strike outs and homeruns allowed. This component seems to represent teams that hit for power and are able to get extra base hits on a consistent basis. They may not have an above average amount of hits, but they hit the ball for more than one base when they do. In addition their pitchers seem to strike out a lot of batters and do not give up many hits but allow more homeruns when they do.
+
+PC3 has positive loadings on pitcher strike outs and complete games while also having negative loadings on hits, homeruns, walks, and ERA. This likely represents a team with very good starting pitching since all of these qualities are desireable. In terms of hitting, PC3 has positive loadings on hits, walks, at bats, stolen bases and strikouts. This could represent an offense with a lot of speed who get on base a lot and are able to steal extra bases when they do.
+
+PC4 has the exact opposite pitching loadings as PC3. Meaning teams that are represented by this component likely give up a lot of runs and need multiple pitchers per game. Most of the key offensive statistics have negative loadings. We expect this component to be negatively correlated with wins.
+
+```{r}
+team.Data$pc1 <- pc_dep$scores[,1]
+team.Data$pc2 <- pc_dep$scores[,2]
+team.Data$pc3 <- pc_dep$scores[,3]
+team.Data$pc4 <- pc_dep$scores[,4]
+
+PC.model <- glm(W~pc1+pc2+pc3+pc4, data=team.Data)
+summary(PC.model)
+
+team.Data$playoff_finish = as.numeric(team.Data$playoff_finish)
+PC.model <- glm(playoff_finish~pc1+pc2+pc3+pc4, data=team.Data)
+summary(PC.model)
+
+```
+
+All PC's are significant when modeling wins. PC3 is the most significant and PC4 is the only component which is negatively correlated with wins.
+
+When looking at playoff finish, we see PC1 is no longer significant that is to suggest that teams that represent PC1 do well in the regular season but do not perform well enough to consistently make it through the post season.
+
+```{r}
+cols= c(7:35)
+team.Data[,cols] = apply(team.Data[,cols], 2, function(x) as.numeric(x))
+
+pc_dep <- princomp(team.Data[7:35])
+
+var_pc <- (pc_dep$sdev)^2
+
+qplot(x=1:29, y=cumsum(var_pc)/sum(var_pc)*100, geom="point") + 
+  xlab("PC number") + ylab("Cumulative %") + ylim(c(0,100)) +
+  geom_hline(aes(yintercept=80))
+
+qplot(x=1:29, y=var_pc, geom=c("point", "line")) + 
+  xlab("PC number") + ylab("Eigenvalue") + ylim(c(0,8))
+```
+
+Based on the cumulative percentage plot, the first 7 principal components keep 80% of the original variance. In addition the scree plot shows that the first 4 components have eigenvalues greater than one and the curve starts to flatten out around the 7th component. From these graphs, we decided to keep the first 7 components for  our analysis.
+
+```{r}
+color.palette  <- colorRampPalette(c("blue", "white", "red"))(n=599)
+heatmap.2(pc_dep$loadings[,1:5], scale="none", Rowv=NA, Colv=NA, density.info="none",
+          dendrogram="none", trace="none", col=color.palette)
+```
+
+PC1 for awards only has negative loadings on 4 out of the 30 awards. It also has very high positive loadings on previous year all stars, gold gloves, as well as previous year awards, meaning that individuals on the team had performed very well the year prior.
+
+PC2 has high positive loading on previous year awards but low on previous year all stars. This could represent teams that have one or two really strong performing players who win most of the awards.
+
+PC3 has a positive loading previous year awards but a negative loading on key awards like gold gloves and silver sluggers which are awarded to the best hitters and best fielders at every position.
+
+PC4 has a high negative loading on gold gloves, a positve loading on silver sluggers.
+
+PC5 has a high positive loading on silver sluggers and a high negative loading on tsn all stars.
+
+```{r}
+team.Data$pca1 <- pc_dep$scores[,1]
+team.Data$pca2 <- pc_dep$scores[,2]
+team.Data$pca3 <- pc_dep$scores[,3]
+team.Data$pca4 <- pc_dep$scores[,4]
+team.Data$pca5 <- pc_dep$scores[,5]
+
+PC.model <- glm(W~pca1+pca2+pca3+pca4+pca5, data=team.Data)
+summary(PC.model)
+
+
+team.Data$playoff_finish = as.numeric(team.Data$playoff_finish)
+PC.model <- glm(playoff_finish~pca1+pca2+pca3+pca4+pca5, data=team.Data)
+summary(PC.model)
+```
+
+The only component that is positively correlated with wins and playoff performance is PC1.
+# Variable Selection
+
+Load in the team data:
+```{r}
+#teamData <- readRDS("/Users/cekurland/Desktop/MATH456/Project/data/teamAwards_fin.rds")
+teamData <- readRDS("/Users/KBari/OneDrive/Desktop/Math 456/project/team.Data.rds")
+
+```
+
+```{r}
+drops <- c("salary.y","salary.x")
+teamData <- teamData[ , !(names(teamData) %in% drops)]
+
+colnames(teamData)[colnames(teamData)=="salary_batters.y"] <- "salary_batters"
+colnames(teamData)[colnames(teamData)=="salary_pitchers.y"] <- "salary_pitchers"
+colnames(teamData)[colnames(teamData)=="salary_total.y"] <- "salary_total"
+
+```
+
+
+To start off, there are 44 variables that we could consider. We wanted to shrink this down to a select few that were most important to a model.
+
+
+
+The goal of the above code is to try and minimize the number of variables. Using AIC as a reference, we are able to cut down the number of variables from 28 to 18. Now, this approach does not mean that the model is necessarily better. There could have been relationships between variables that this automated processs missed.  
+
+# Final model
+
+```{r}
+# 18 independent variables
+n <- c('W','pca1','pca3','pca4', 'pc1','pc2','pc3','pc4')
+
+mod_final <- lm(W~.,team.Data[n])
+summary(mod_final)
+
+mod_back <- step(mod_final,direction='backward')
+
+```
+
+After knocking down the variable count, there was only a slight increase in model fit based on the Adjusted R-squared value. This is significant however, because it significantly cuts down on the number of variables being used but is still just as good of a fit.
+
+```{r}
+t.Data <- rbind(team.Data,list(1,"NA","AVG","Average",mean(team.Data$W),mean(team.Data$L),mean(team.Data$prev_year_awards),
+                               mean(team.Data$prev_year_allstars),
+                               0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                               mean(team.Data$salary_batters),mean(team.Data$salary_pitchers),
+                               mean(team.Data$salary_total),mean(team.Data$H),
+                               mean(team.Data$X2B),mean(team.Data$X3B),mean(team.Data$HR),mean(team.Data$AB),
+                               mean(team.Data$RBI),mean(team.Data$SB),mean(team.Data$BB),
+                               mean(team.Data$SO),mean(team.Data$CG),mean(team.Data$PSO),
+                               mean(team.Data$HA),mean(team.Data$HRA),mean(team.Data$BBA),
+                               mean(team.Data$ERA),0,0,0,0,0,0,0,0,0))
+
+t.Data <- t.Data[,c(1,2,4:6,37:54)]
+t.Data[6:23] <- scale(t.Data[6:23])
+Year.Winners <- slice(t.Data, 11,43,65,90,122,137,169,208,225,265,310,331,367,397,427,440,469,510,533,563,614,622,
+                      669,696,733,764,793,802,853,870,889) 
+
+p<-ggplot(Year.Winners, aes(x=H, y=HA, group=name)) +
+  geom_line(aes(color=name))+
+  geom_point(aes(color=name))
+p
+```
+
+## LASSO
+
+```{r}
+#y <- teamData$W
+# for when miami doesn't have NA's
+#X <- model.matrix(W~.,teamData[,c(5,7:50)])[,-1]
+na_teamData <- na.omit(t.Data)
+#takes out na's for now
+y <- na_teamData$W
+X <- model.matrix(W~.,na_teamData[,c(4,6,7,9:23)])[,-1]
+plot(glmnet(X,y,alpha=1))
+```
+
+```{r}
+set.seed(123)
+cvfit <- cv.glmnet(X,y,alpha=1)
+fit <- cvfit$glmnet.fit
+cvfit$lambda.min
+plot(cvfit)
+```
+
+```{r}
+xlim <- log(c(fit$lambda[1],cvfit$lambda.min))
+plot(fit,xlim=xlim,xvar="lambda")
+
+```
+
+```{r}
+b <- coef(cvfit,s=cvfit$lambda.min)
+#b[which(b>0.2),,drop=FALSE]
+b
+```
+
+## Backwards Elimination
+
+```{r}
+mod_final <- lm(W~.,t.Data[,c(4,10:23)])
+summary(mod_final)
+
+mod_back <- step(mod,direction='backward')
+```
+
+LAsso did not remove any variables and did not remove any despite some being highly insignificant. Backwards elimination kept 14 out of the original 17 variables so we went with this model.
